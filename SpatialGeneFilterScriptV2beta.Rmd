@@ -1,0 +1,1253 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+networkExpressionFile <- readRDS("/Volumes/castelo-branco-group/David/SingleCellData/ELISA10xanalysis/AggrGeneFocus.rds")
+networkAnnotableFile  <- readRDS("/Volumes/castelo-branco-group/David/SingleCellData/ELISA10xanalysis/AggrGeneFocusAnno.rds")
+
+networkExpressionFile <- read.table("~/Downloads/ens_neurons_sten.csv", sep=",",header=TRUE,as.is=TRUE,check.names=FALSE)
+row.names(networkExpressionFile) <- networkExpressionFile[,1]
+networkExpressionFile <- networkExpressionFile[,-1]
+
+networkAnnotableFile <- savenetworkanno
+networkExpressionFile <- savenetworkdf[,row.names(subset(networkAnnotableFile, networkAnnotableFile$`substring(colnames(emat), 18)` %in% c("3","4")))]
+
+library(scater, quietly = TRUE)
+emat_10x.qc <- newSCESet(countData = networkExpressionFile)
+emat_10x.qc <- scran::computeSumFactors(emat_10x.qc,positive=TRUE)
+
+emat_10x.qc <- scater::normalize(emat_10x.qc)        
+filtercells <- apply(exprs(emat_10x.qc),2,function(x) anyNA(x))
+filtercells <- exprs(emat_10x.qc)[,!filtercells]
+networkExpressionFile <- filtercells
+
+#subsetEAE OL Cntrl Gioele
+networkExpressionFile <- networkExpressionFile[,networkAnnotableFile$Group %in% c("EAE")]
+networkAnnotableFile <- networkAnnotableFile[colnames(networkExpressionFile),]
+networkExpressionFile <- networkExpressionFile[,networkAnnotableFile$L1Clusters %in% c("1","2")]
+networkAnnotableFile <- networkAnnotableFile[colnames(networkExpressionFile),]
+
+load("~/Documents/SingleCellData/Networkclustering/OLsMS/OL_patient_121_networkAnnotableFile.Robj")
+load("~/Documents/SingleCellData/Networkclustering/OLsMS/OL_patient_121_networkExpressionFile.Robj")
+load("~/Documents/SingleCellData/Networkclustering/OLsMS/OL_patient_122_networkAnnotableFile.Robj")
+load("~/Documents/SingleCellData/Networkclustering/OLsMS/OL_patient_122_networkExpressionFile.Robj")
+load("~/Documents/SingleCellData/Networkclustering/OLsMS/OL_patient_176_networkAnnotableFile.Robj")
+load("~/Documents/SingleCellData/Networkclustering/OLsMS/OL_patient_176_networkExpressionFile.Robj")
+networkExpressionFile <- cbind(networkExpressionFile_121,networkExpressionFile_122,networkExpressionFile_176)
+networkAnnotableFile <- as.data.frame(rbind(networkAnnotableFile_121,networkAnnotableFile_122,networkAnnotableFile_176))
+rm(networkAnnotableFile_121,networkAnnotableFile_122,networkAnnotableFile_176,networkExpressionFile_121,networkExpressionFile_122,networkExpressionFile_176)
+
+Optional, after L1 clustering remove clusters that seem to be doublets or otherwise bad quality cells
+```{r}
+networkExpressionFile <- networkExpressionFile[,names(subset(SCN3Elevel1,! SCN3Elevel1 %in% c("1")))]
+networkAnnotableFile <- networkAnnotableFile[colnames(networkExpressionFile),]
+
+```
+Filter out NaN and Na
+```{r}
+#mt-
+#Mt-
+#MT-
+#see if you grep something
+table(grepl("ERCC-",rownames(networkExpressionFile)))
+networkExpressionFile <- networkExpressionFile[! grepl("ERCC-",rownames(networkExpressionFile)),]
+#see if you grep something
+table(grepl("MT-",rownames(networkExpressionFile)))
+networkExpressionFile <- networkExpressionFile[! grepl("mt-",rownames(networkExpressionFile)),]
+ filtercells <- apply(networkExpressionFile,2,function(x) anyNA(x))
+networkExpressionFile <- as.matrix(networkExpressionFile[,!filtercells])
+filtercells <- apply(networkExpressionFile,2,function(x) any(x=="NaN"))
+networkExpressionFile <- as.matrix(networkExpressionFile[,!filtercells])
+networkAnnotableFile <- networkAnnotableFile[colnames(networkExpressionFile),]
+rm(filtercells)
+networkExpressionFile <- networkExpressionFile-min(networkExpressionFile)
+```
+Remove genes that are only expressed in a few cells
+```{r}
+expr_limit <- mean(networkExpressionFile)
+expressed_genes <- 1*apply(networkExpressionFile,1,function(x) (x) > expr_limit)
+expressed_genes <- apply(expressed_genes,2,function(x) sum(x) >= 1)
+networkExpressionFile <- networkExpressionFile[expressed_genes,]
+rm(expressed_genes)
+```
+Feature selection
+```{r}
+
+CVsq <- function(x) {(sd(x)/mean(x))^2}
+expr_limit <- mean(networkExpressionFile)
+emat_expressed <- apply(networkExpressionFile,1,function(x) any ((x) > expr_limit))
+emat_expressed <- networkExpressionFile[emat_expressed,]
+CV2 <- apply(emat_expressed,1,CVsq)
+meancounts <- apply(emat_expressed,1,mean)
+CV2_matrix <- matrix(c(log(meancounts),log(CV2+1)),nrow = length(CV2),ncol = 2)
+row.names(CV2_matrix) <- names(CV2)
+colnames(CV2_matrix) <- c("LogExpr","CV2")
+CV2_matrix <- as.data.frame(CV2_matrix)
+library(e1071)
+model <- svm(CV2 ~ LogExpr ,CV2_matrix)#, gamma = 0.06)
+predictedY <- predict(model, CV2_matrix)
+CV2_matrix <- cbind(CV2_matrix,predictedY)
+CV2_matrix$RelativeVariance <-CV2_matrix$CV2 - CV2_matrix$predictedY
+NormGenes <- row.names(subset(CV2_matrix, RelativeVariance >= -0))
+NormGenesVar <- apply(networkExpressionFile,1,function(x) var(x))
+#NormGenes <- row.names(networkExpressionFile[NormGenesVar > median(NormGenesVar),])
+NormGenesFactor <- as.factor(1*(CV2_matrix$RelativeVariance >= -0))
+#NormGenesFactor<- as.factor(1*(row.names(CV2_matrix) %in% NormGenes))
+palette("default")
+plot(CV2_matrix$LogExpr,CV2_matrix$CV2,xlab ="Mean Count Magnitude (log)",ylab="Squared Coefficient of Variation", pch=20, cex=0.3, col=NormGenesFactor)
+points(CV2_matrix$LogExpr,predictedY, col="green",pch=20, cex=0.1)
+length(NormGenes)
+NormGenes <- subset(NormGenes,! NormGenes %in% c("Xist","Tsix"))
+featureselection <- NormGenes
+SCN3Egeneset <- featureselection
+#SCN3Egeneset <- intersect(featureselection,L1L2markers)
+#SCN3Egeneset <- L1L2markers
+rm(CV2,CV2_matrix,emat_expressed,meancounts,model,NormGenes,NormGenesFactor,predictedY,SCN3Egeneset)
+write(featureselection,file="featureselection.txt")
+```
+```{r}
+library(Matrix)
+savenetworkdf <- as.matrix(networkExpressionFile,"sparse=TRUE")
+savenetworkanno <- networkAnnotableFile
+#networkExpressionFile <- savenetworkdf
+featureselection <- row.names(networkExpressionFile)
+featureselection <- subset(featureselection,! featureselection %in% c("Xist","Tsix"))
+```
+#Spatially filter genes with auto bootstrapping
+```{r, message=FALSE}
+gc()
+usemagic <- "FALSE"
+whentobootstrap <- 10000 #cellnumber
+howmanyboots <- 10+1 #bootstrap repetitions
+samplesize <- 2000 #how many cells to take for sampling
+#networkExpressionFile <- networkExpressionFilepremagic
+threshold <- 2 #use mean spatial correlation of geneset of the featureselection (1) or after the first round of filtering (2) (more strict, which is default) 
+SCN3Egeneset <- featureselection
+originalnetworkdf <- networkExpressionFile
+if(ncol(networkExpressionFile)>whentobootstrap){
+originalnetworkdf <- networkExpressionFile
+bootstrap<-1
+sample<-1
+moransIsampled <- as.character(NULL)
+}
+if(ncol(networkExpressionFile)<=whentobootstrap)
+{
+  bootstrap<-howmanyboots-1
+  sample<-0
+  }
+while(bootstrap<howmanyboots){
+SCN3Egeneset <- featureselection
+iter=0
+meanMoran<-0
+if(sample==1){
+networkExpressionFile  <- originalnetworkdf[,sample(ncol(originalnetworkdf), samplesize) ]
+print(paste("bootstrapping...","round",bootstrap))
+}
+OldGeneset <- as.character(seq_len(100000))
+while(length(OldGeneset) != length(SCN3Egeneset) ){
+ iter=iter+1
+  library(amap)
+#library(MASS)
+#library(destiny)
+library(dpt)
+#library(Matrix)
+#library(diffusionMap)
+print(paste("Preparing genefiltering on", length(SCN3Egeneset), "genes."))
+print("Making celllandscape...Filtering possible duplicated cells in original file")
+#if(length(OldGeneset)==100000)
+#{
+#  pca <- prcomp(t(log(networkExpressionFile[featureselection,]+1)),scale. = FALSE)
+#  cd_diffusionplot <-pca$x[,c(1:30)]
+#  }
+
+#if(length(OldGeneset)!=100000){cd_diffusionplot <- t(log(networkExpressionFile[SCN3Egeneset,]+1))}
+  if(length(SCN3Egeneset) > 4000){
+pca <- prcomp(t(log(networkExpressionFile[SCN3Egeneset,]+1)),scale. = FALSE)
+ncompGF <- 50
+if(length(SCN3Egeneset) < 50) {ncompGF <- length(SCN3Egeneset)}
+cd_diffusionplot <-pca$x[,c(1:which(cumsum(pca$sdev[1:ncompGF])/sum(pca$sdev[1:ncompGF]) > 0.6)[1])]
+  }
+   if(length(SCN3Egeneset) <= 4000){
+cd_diffusionplot <-t(log(networkExpressionFile[SCN3Egeneset,]+1))
+}
+cd_diffusionplot <- cd_diffusionplot[!duplicated(cd_diffusionplot),]
+print("Making celllandscape...Making diffusionmap")
+gc()
+ts <- Transitions(cd_diffusionplot,k=20)
+
+
+#Gene filtering
+print(paste("Filtering", length(SCN3Egeneset), "genes."))
+OldGeneset <- SCN3Egeneset
+NetworkDist <- as.matrix(ts@transitions)
+#NetworkDist <- distcells*distcells2
+colnames(NetworkDist) <- row.names(cd_diffusionplot)
+row.names(NetworkDist) <- row.names(cd_diffusionplot)
+emat_expressed <- apply(networkExpressionFile,1,function(x) any ((x) >expr_limit))
+emat_expressed <- networkExpressionFile[emat_expressed,row.names(NetworkDist)]
+emat_expressed <- as.matrix(emat_expressed[intersect(row.names(emat_expressed),OldGeneset),])
+if(usemagic=="TRUE"){
+emat_expressed <- magic(ts,emat_expressed[,row.names(cd_diffusionplot)], power = 1, k = 3, n_eigs = 20, n_local = 10)
+}
+library(doParallel)
+library(foreach)
+
+library(spdep)
+cores <- detectCores()
+cl <- makeCluster(cores)  
+registerDoParallel(cl)  
+SCN3Egenefilter <- matrix(nrow=nrow(emat_expressed),ncol = 3) 
+cellnames <- colnames(emat_expressed)
+spatial.weights <- mat2listw(NetworkDist)
+numbsim <- 1
+test <- foreach(i=1:nrow(emat_expressed),.packages="spdep",.combine=cbind) %dopar% 
+{
+ x <- emat_expressed[i,]
+ r <- row.names(emat_expressed)[i]
+ m <- c(unlist(moran.mc(x,spatial.weights,nsim=numbsim,zero.policy = TRUE))[1:3],r)
+}
+
+stopCluster(cl)
+SCN3Egenefilter <- t(test)
+SCN3Egenefilter <- SCN3Egenefilter[! apply(SCN3Egenefilter,1,function(x) any(x=="NaN")),]
+row.names(SCN3Egenefilter) <- SCN3Egenefilter[,4]
+SCN3Egenefilter_clean <- as.data.frame(SCN3Egenefilter[complete.cases(SCN3Egenefilter),c(1:3)])
+r <- row.names(SCN3Egenefilter_clean)
+SCN3Egenefilter_clean <- apply(SCN3Egenefilter_clean,2,function(x) as.numeric(x))
+row.names(SCN3Egenefilter_clean) <- r
+
+
+#if(meanMoran==0){meanMoran<-mean(SCN3Egenefilter_clean[,1])}
+if(iter<=threshold){meanMoran<-mean(SCN3Egenefilter_clean[,1],na.rm=TRUE)}
+SCN3Egeneset <- row.names(SCN3Egenefilter_clean[SCN3Egenefilter_clean[,1] >= meanMoran,])
+
+}
+bootstrap <- bootstrap+1
+if(sample==1){
+moransIsampled <- c(moransIsampled,SCN3Egeneset)
+}
+}
+networkExpressionFile <- originalnetworkdf
+GeneMarkov1 <- SCN3Egeneset
+if(sample==1){GeneMarkov1 <- unique(moransIsampled)}
+#L1geneset <- GeneMarkov
+rm(emat_expressed,NetworkDist,SCN3Egenefilter,test,cellnames,cl,cores,i,iter,meanMoran,numbsim,OldGeneset,r,SCN3Egeneset,spatial.weights)
+
+print("Done with part one... Starting part two...")
+
+gc()
+
+SCN3Egeneset <- featureselection
+originalnetworkdf <- networkExpressionFile
+if(ncol(networkExpressionFile)>whentobootstrap){
+bootstrap<-1
+sample<-1
+moransIsampled <- as.character(NULL)
+}
+if(ncol(networkExpressionFile)<=whentobootstrap)
+{
+  bootstrap<-howmanyboots-1
+  sample<-0
+  }
+while(bootstrap<howmanyboots){
+SCN3Egeneset <- featureselection
+iter=0
+meanMoran<-0
+if(sample==1){
+networkExpressionFile  <- originalnetworkdf[,sample(ncol(originalnetworkdf), samplesize) ]
+print(paste("bootstrapping...","round",bootstrap))
+}
+OldGeneset <- as.character(seq_len(100000))
+while(length(unique(GeneMarkov1)) < (length(SCN3Egeneset)) ){
+ iter=iter+1
+  library(amap)
+#library(MASS)
+#library(destiny)
+library(dpt)
+#library(Matrix)
+#library(diffusionMap)
+print(paste("Preparing genefiltering on", length(SCN3Egeneset), "genes."))
+print("Making celllandscape...Filtering possible duplicated cells in original file")
+#if(length(OldGeneset)==100000)
+#{
+#  pca <- prcomp(t(log(networkExpressionFile[featureselection,]+1)),scale. = FALSE)
+#  cd_diffusionplot <-pca$x[,c(1:30)]
+#  }
+
+#if(length(OldGeneset)!=100000){cd_diffusionplot <- t(log(networkExpressionFile[SCN3Egeneset,]+1))}
+pca <- prcomp(t(log(networkExpressionFile[SCN3Egeneset,]+1)),scale. = FALSE)
+ncompGF <- 50
+if(length(SCN3Egeneset) < 50) {ncompGF <- length(SCN3Egeneset)}
+cd_diffusionplot <-pca$x[,c(1:which(cumsum(pca$sdev[1:ncompGF])/sum(pca$sdev[1:ncompGF]) > 0.4)[1])]
+#cd_diffusionplot <- t(log(networkExpressionFile[SCN3Egeneset,]+1))
+cd_diffusionplot <- cd_diffusionplot[!duplicated(cd_diffusionplot),]
+print("Making celllandscape...Making diffusionmap")
+gc()
+ts <- Transitions(cd_diffusionplot,k=20)
+
+
+#Gene filtering
+print(paste("Filtering", length(SCN3Egeneset), "genes."))
+OldGeneset <- SCN3Egeneset
+NetworkDist <- as.matrix(ts@transitions)
+#NetworkDist <- distcells*distcells2
+colnames(NetworkDist) <- row.names(cd_diffusionplot)
+row.names(NetworkDist) <- row.names(cd_diffusionplot)
+emat_expressed <- apply(networkExpressionFile,1,function(x) any ((x) >expr_limit))
+emat_expressed <- networkExpressionFile[emat_expressed,row.names(NetworkDist)]
+emat_expressed <- as.matrix(emat_expressed[intersect(row.names(emat_expressed),OldGeneset),])
+if(usemagic=="TRUE"){
+emat_expressed <- magic(ts,emat_expressed[,row.names(cd_diffusionplot)], power = 1, k = 3, n_eigs = 20, n_local = 10)
+}
+library(doParallel)
+library(foreach)
+
+library(spdep)
+cores <- detectCores()
+cl <- makeCluster(cores)  
+registerDoParallel(cl)  
+SCN3Egenefilter <- matrix(nrow=nrow(emat_expressed),ncol = 3) 
+cellnames <- colnames(emat_expressed)
+spatial.weights <- mat2listw(NetworkDist)
+numbsim <- 1
+networkdist <- 1-NetworkDist
+test <- foreach(i=1:nrow(emat_expressed),.packages="spdep",.combine=cbind) %dopar% 
+{
+ x <- emat_expressed[i,]
+ x <- x[x>expr_limit]
+ if(length(x)<2){}
+ else{
+ r <- row.names(emat_expressed)[i]
+ y <- networkdist[names(x),names(x)]
+ a <- mean(y)
+ y <- nrow(y)
+ m <- c(a,y,r)
+ }
+}
+
+stopCluster(cl)
+SCN3Egenefilter <- t(test)
+SCN3Egenefilter <- SCN3Egenefilter[! apply(SCN3Egenefilter,1,function(x) any(x=="NaN")),]
+row.names(SCN3Egenefilter) <- SCN3Egenefilter[,3]
+SCN3Egenefilter_clean <- as.data.frame(SCN3Egenefilter[complete.cases(SCN3Egenefilter),c(1:2)])
+r <- row.names(SCN3Egenefilter_clean)
+SCN3Egenefilter_clean <- apply(SCN3Egenefilter_clean,2,function(x) as.numeric(x))
+row.names(SCN3Egenefilter_clean) <- r
+
+SCN3Egenefilter_clean2 <- SCN3Egenefilter_clean
+SCN3Egenefilter_clean2[,1] <- log(SCN3Egenefilter_clean2[,1]+1)
+library(e1071)
+model <- svm(V1 ~ V2 ,SCN3Egenefilter_clean2,gamma = 10)
+predictedY <- predict(model, SCN3Egenefilter_clean2)
+SCN3Egenefilter_clean2 <- SCN3Egenefilter_clean2[names(predictedY),]
+CV2_matrix <- as.data.frame(cbind(SCN3Egenefilter_clean2,predictedY))
+CV2_matrix$RelativeVariance <-CV2_matrix[,1] - CV2_matrix[,3]
+SCN3Egeneset <- row.names(subset(CV2_matrix, RelativeVariance < 0))
+}
+bootstrap <- bootstrap+1
+if(sample==1){
+moransIsampled <- c(moransIsampled,SCN3Egeneset)
+}
+}
+networkExpressionFile <- originalnetworkdf
+GeneMarkov <- unique(c(SCN3Egeneset,GeneMarkov1))
+if(sample==1){GeneMarkov <- unique(c(moransIsampled,GeneMarkov1))}
+L1geneset <- GeneMarkov
+rm(emat_expressed,NetworkDist,SCN3Egenefilter,test,cellnames,cl,cores,i,iter,meanMoran,numbsim,OldGeneset,r,SCN3Egeneset,spatial.weights)
+
+  print("Making final celllandscape...Filtering possible duplicated cells in original file")
+  #cd_diffusionplot <- t(log(networkExpressionFile[GeneMarkov,]+1))
+   if(length(GeneMarkov) > 4000){
+pca <- prcomp(t(log(networkExpressionFile[GeneMarkov,]+1)),scale. = FALSE)
+ncompGF <- 50
+if(length(GeneMarkov) < 50) {ncompGF <- length(GeneMarkov)}
+cd_diffusionplot <-pca$x[,c(1:which(cumsum(pca$sdev[1:ncompGF])/sum(pca$sdev[1:ncompGF]) > 0.6)[1])]
+  }
+   if(length(GeneMarkov) <= 4000){
+cd_diffusionplot <-t(log(networkExpressionFile[GeneMarkov,]+1))
+}
+cd_diffusionplot <- cd_diffusionplot[!duplicated(cd_diffusionplot),]
+#library(Matrix)
+#cd_diffusionplot <- Matrix(cd_diffusionplot, sparse = TRUE)
+print("Making final celllandscape...Making diffusionmap. This can take a while...")
+ts <- Transitions(cd_diffusionplot,k=20)
+  if(usemagic=="TRUE"){
+    networkExpressionFilepremagic <-  networkExpressionFile
+networkExpressionFile <- magic(ts,networkExpressionFile[,row.names(cd_diffusionplot)], power = 1, k = 3, n_eigs = 20, n_local = 10)
+}
+print("Done.")
+#save(networkExpressionFile,networkAnnotableFile,expr_limit,featureselection,GeneMarkov,GeneMarkov1,L1geneset,ts,file="~/Documents/SingleCellData/Networkclustering/L1saved.rds")
+write(GeneMarkov,file="FilteredGenesEAE.txt")
+``` 
+Estimate the number of Level1 classes, using cluster estimation and tSNE, try diffent numbers of PCA components
+```{r}
+#load("~/Documents/SingleCellData/Networkclustering/L1saved.rds")
+gc()
+SCN3Egeneset <- GeneMarkov
+library(factoextra)
+pca <- prcomp(as.matrix(ts@transitions),scale. = FALSE)
+plot(pca$sdev[1:50],pch = 20,
+xlab = 'Diffusion component (DC)', ylab = 'sdev')
+ncompL1 <- which(cumsum(pca$sdev[1:50])/sum(pca$sdev[1:50]) > 0.6)[1]
+genemodulePCA <-  cor(t(log(networkExpressionFile+1)),pca$x[,1:20],method="pearson")
+genemodulePCAz <- scale(genemodulePCA)
+
+Networkdist <- as.matrix(ts@transitions)
+#Networkdist <- pca$x[,c(1:ncompL1)]
+#row.names(Networkdist) <- row.names(cd_diffusionplot)
+#Networkdist <- Networkdist[colnames(clusterdata),]
+#Networkdist <- as.matrix(dist(Networkdist,method="manhattan"))
+#Networkdist <- as.matrix(Dist(pca$x[,c(1:ncompL1)],method = "manhattan",nbproc = 8))
+colnames(Networkdist) <- row.names(cd_diffusionplot)
+row.names(Networkdist) <- row.names(cd_diffusionplot)
+#colnames(Networkdist) <- colnames(networkExpressionFile)
+#row.names(Networkdist) <- colnames(networkExpressionFile)
+library(WGCNA)
+#range01 <- function(x){(x-min(x))/(max(x)-min(x))}
+#Networkdist <- range01(Networkdist)
+#adjacency <- as_adj(testMNE, sparse = FALSE, attr = "Pearson")
+#TOM = TOMsimilarity(adjacency)
+#Networkdist <- as.dist(1-adjacency)
+TOM = TOMsimilarity(Networkdist)
+library(igraph)
+L1graph <- graph_from_adjacency_matrix(Networkdist,weighted = TRUE,mode="undirected")
+L1graphSupercells <- cluster_louvain(L1graph,weights=E(L1graph)$weight)
+table(L1graphSupercells$membership)
+SCN3Elevel1 <- as.factor(L1graphSupercells$membership)
+names(SCN3Elevel1) <- L1graphSupercells$names
+SCN3Elevel1 <- SCN3Elevel1[intersect(row.names(cd_diffusionplot),names(SCN3Elevel1))]
+SCN3Ecluster <- SCN3Elevel1
+Networkdist <- as.dist(1-as.matrix(ts@transitions))
+#fviz_nbclust(pca$x[,c(1:ncompL1)],diss=dist(pca$x[,c(1:ncompL1)],method="manhattan"), hcut, method = "silhouette",hc_method = "ward.D2",k.max = 40)
+
+```
+```{r}
+#View(as.matrix(ts@transitions))
+#Networkdist <- 1*(as.matrix(ts@transitions) > 0)
+L1graphSupercells <- cluster_walktrap(L1graph,weights=E(L1graph)$weight,step=50,merges=TRUE)
+table(L1graphSupercells$membership)
+#L1graphSupercells <- cluster_fast_greedy(L1graph,weights=E(L1graph)$weight)
+#table(L1graphSupercells$membership)
+SCN3Elevel1 <- as.factor(L1graphSupercells$membership)
+names(SCN3Elevel1) <- L1graphSupercells$names
+SCN3Ecluster <- SCN3Elevel1[colnames(networkExpressionFile)]
+Networkdist <- as.dist(1-Networkdist)
+```
+Generate tSNE coordinates
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+pcatsne <- prcomp(t(log(networkExpressionFile[GeneMarkov,]+1)),scale. = FALSE)
+ncompLtsne <- which(cumsum(pcatsne$sdev[1:50])/sum(pcatsne$sdev[1:50]) > 0.8)[1]
+tsne <- t(pcatsne$x[,c(1:ncompLtsne)]) 
+#tsne <- t(pca$x[which(colnames(networkExpressionFile) %in% names(SCN3Ecluster)),c(1:ncompL1)])
+#tsne <- Networkdist
+#tsne <- 1-TOM
+#tsne <- log(networkExpressionFile[L1L2markers,]+1)
+#tsne <- z$H[-c(29,31:33),]
+library(Rtsne)
+set.seed(123456789)
+tsne_out <- Rtsne(t(tsne), initial_dims=100, perplexity=round(7+(0.01*ncol(networkExpressionFile)),0),max_iter = 1000,check_duplicates = FALSE,
+                  verbose = TRUE, theta = 0.5, pca = FALSE)
+#rownames(tsne_out$Y) <- colnames(tsne)
+```
+Do Level1 clustering and split the dataset for downstream clustering
+```{r, fig.height=10}
+library(heatmap3)
+library(viridis)
+clusterdata <- as.data.frame(t((1*(apply(networkExpressionFile[GeneMarkov,names(SCN3Ecluster)],1,function(x) (x) >expr_limit)))))
+clusterdata <- clusterdata[apply(clusterdata,1,function(x) var(x) > 0),apply(clusterdata,2,function(x) var(x) > 0)]
+library(cluster)
+distpca <- pca$x[,c(1:ncompL1)]
+row.names(distpca) <- row.names(cd_diffusionplot)
+distpca <- distpca[colnames(clusterdata),]
+#SCN3E_hc <- hclust(dist(distpca,method="manhattan"), method = "ward.D2")
+SCN3E_hc <- hclust(as.dist(1-TOM), method = "average")
+#SCN3E_hc <- hclust(as.dist(networkdist[colnames(clusterdata),colnames(clusterdata)]), method = "ward.D2")
+#SCN3Ecluster <- rbind(groups = cutree(SCN3E_hc, k=20))
+#names(SCN3Ecluster) <- row.names(distpca)
+
+pcagene <- prcomp(log(networkExpressionFile[row.names(clusterdata),]+1),scale. = FALSE)
+plot(pcagene$sdev[1:50],pch = 20,
+xlab = 'Diffusion component (DC)', ylab = 'sdev')
+
+pcageneexpression <- pcagene$x[,c(1:which(cumsum(pcagene$sdev[1:100])/sum(pcagene$sdev[1:100]) > 0.2)[1])]
+SCN3E_hc_gene <- hclust(dist(pcageneexpression,method="manhattan"), method = "ward.D2")
+SCN3Egenecluster <- rbind(groups = cutree(SCN3E_hc_gene, k=15))
+names(SCN3Egenecluster) <- row.names(pcageneexpression)
+#View(t(as.data.frame(SCN3Egenecluster)))
+#GeneMarkovUnfiltered <- GeneMarkov
+#GeneMarkov <- GeneMarkovUnfiltered
+#GeneMarkov <- subset(GeneMarkov, GeneMarkov %in% setdiff(GeneMarkov,names(SCN3Egenecluster[SCN3Egenecluster == 8])))
+
+
+cd_diffusionplotgenes <-t(log(networkExpressionFile[row.names(clusterdata),]+1))
+cd_diffusionplotgenes <- cd_diffusionplotgenes[!duplicated(cd_diffusionplotgenes),]
+tsgenes <- Transitions(t(cd_diffusionplotgenes),k=20)
+library(igraph)
+Networkdistgenes <- as.matrix(tsgenes@transitions)
+colnames(Networkdistgenes) <- colnames(cd_diffusionplotgenes)
+row.names(Networkdistgenes) <- colnames(cd_diffusionplotgenes)
+genegraph <- graph_from_adjacency_matrix(Networkdistgenes,weighted = TRUE,mode="undirected")
+genegraphSupercells <- cluster_louvain(genegraph,weights=E(genegraph)$weight)
+table(genegraphSupercells$membership)
+SCN3Egenecluster <- as.factor(genegraphSupercells$membership)
+names(SCN3Egenecluster) <- genegraphSupercells$names
+library(WGCNA)
+TOMgenes = TOMsimilarity(Networkdistgenes)
+SCN3E_hc_gene <- hclust(as.dist(1-TOMgenes), method = "average")
+
+# 
+# library("dendsort")
+# 
+# SCN3E_hc <- dendsort(SCN3E_hc, type="min")
+# SCN3E_hc_gene <- dendsort(SCN3E_hc_gene, type="min")
+
+library(cba)
+SCN3E_hc$merge <- order.optimal(dist(pca$x[,c(1:ncompL1)],method="manhattan"), SCN3E_hc$merge)$merge
+SCN3E_hc_gene$merge <- order.optimal(dist(pcageneexpression,method="manhattan"), SCN3E_hc_gene$merge)$merge
+
+
+
+#library(ReorderCluster)
+#SCN3E_hc <- RearrangeJoseph(SCN3E_hc, as.dist(1-TOM),SCN3Ecluster,cpp=1)
+#SCN3E_hc_gene <- RearrangeJoseph(SCN3E_hc_gene, as.dist(1-TOMgenes),SCN3Egenecluster,cpp=1)
+
+#library(cba)
+#SCN3E_hc <- order.optimal(as.dist(1-TOM), SCN3E_hc$merge)
+
+paletteGenes <- rainbow(length(levels(as.factor(SCN3Egenecluster))))
+colsGenes <- paletteGenes[as.factor(SCN3Egenecluster)]
+palette <- rainbow(length(levels(as.factor(SCN3Ecluster))))
+cols <- palette[as.factor(SCN3Ecluster)]
+palette <- rainbow(length(levels(droplevels(as.factor(networkAnnotableFile$Renamed_clusternames)))))
+colsDTA <- palette[as.factor(networkAnnotableFile$Renamed_clusternames)]
+cols <- cbind(cols,colsDTA)
+#cols <- palette[as.factor(networkAnnotableFile$Experiment)]
+#pdf("~/Documents/SingleCellData/IdoDAM/L1clusteringheatmapNew.pdf",width = 20,height = 30,useDingbats=FALSE)
+heatmap3(log(clusterdata+1),RowSideColors=colsGenes,ColSideColors=cols, Rowv = as.dendrogram(SCN3E_hc_gene) , Colv = as.dendrogram(SCN3E_hc) ,scale = "none",symm = F, method = "ward.D2",col=viridis(1024),balanceColor =F,cexRow = 0.4)
+legend("topright", legend=levels(as.factor(SCN3Egenecluster)),
+   col=paletteGenes,
+   pch=19)
+#pdf("~/Documents/SingleCellData/IdoDAM/L1clusteringtSNE.pdf",width = 10,height = 6,useDingbats=FALSE)
+palette <- rainbow(length(levels(as.factor(SCN3Ecluster))))
+cols <- palette[as.factor(SCN3Ecluster)]
+plot(tsne_out$Y,col=cols,pch=20,cex=3)
+legend("topright", legend=levels(as.factor(SCN3Ecluster)),
+   col=palette,
+   pch=19,cex=2)
+palette <- rainbow(length(levels(droplevels(as.factor(networkAnnotableFile[colnames(networkExpressionFile),]$Renamed_clusternames)))))
+cols <- palette[droplevels(as.factor(networkAnnotableFile[colnames(networkExpressionFile),]$Renamed_clusternames))]
+plot(tsne_out$Y,col=cols,pch=20,cex=5)
+legend("topright", legend=levels(droplevels(as.factor(networkAnnotableFile[colnames(networkExpressionFile),]$Renamed_clusternames))),
+   col=palette,
+   pch=19)
+palette <- rainbow(length(levels(droplevels(as.factor(networkAnnotableFile[names(SCN3Ecluster),]$Group)))))
+cols <- palette[droplevels(as.factor(networkAnnotableFile[names(SCN3Ecluster),]$Group))]
+plot(tsne_out$Y,col=cols,pch=20,cex=5)
+legend("topright", legend=levels(droplevels(as.factor(networkAnnotableFile[names(SCN3Ecluster),]$Group))),
+   col=palette,
+   pch=19)
+palette <- rainbow(length(levels(as.factor(networkAnnotableFile$LineageTrace))))
+cols <- palette[as.factor(networkAnnotableFile$LineageTrace)]
+plot(tsne_out$Y,col=cols,pch=20,cex=2)
+legend("topright", legend=levels(as.factor(networkAnnotableFile$LineageTrace)),
+   col=palette,
+   pch=19)
+
+SCN3Elevel1 <- as.factor(SCN3Ecluster)
+table(SCN3Elevel1)
+```
+
+
+Visualize expression
+```{r, fig.width=5}
+library(ggplot2)
+Expression <- as.data.frame(t(log(networkExpressionFile+1)))
+#Expression <- as.data.frame(t(z$H))
+ggplot(as.data.frame(tsne_out$Y), aes(x=V1, y=V2, colour=Expression$Mog)) +
+  geom_point(size=3) + geom_density2d(alpha=0.0,size=0.5, color="black", bins=10)  + scale_colour_gradient(low = "blue", high = "yellow") +
+  theme(strip.background = element_blank(), strip.text.x = element_blank(),axis.text.x = element_blank(),axis.text.y= element_blank(),axis.ticks= element_blank(),axis.line  = element_blank(),panel.border = element_blank(),legend.position  = "right") + 
+  xlab("tSNE_1") + ylab("tSNE_2")+theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+       panel.grid.major = element_blank(),
+       panel.grid.minor = element_blank(),
+       panel.border = element_blank(),
+       panel.background = element_blank())
+```
+
+First we generate markers for each of the clusters
+```{r, fig.width=30}
+library(MAST)
+library(NMF)
+networkExpressionFilesub <- networkExpressionFile[GeneMarkov,names(SCN3Ecluster)]
+networkAnnotableFilesub <- networkAnnotableFile[names(SCN3Ecluster),]
+networkAnnotableFilesub$Clustering <- SCN3Elevel1[colnames(networkExpressionFilesub)]
+networkExpressionFilesub <- networkExpressionFilesub[,networkAnnotableFilesub$Clustering %in% c("8","5")]
+networkAnnotableFilesub <- networkAnnotableFilesub[colnames(networkExpressionFilesub),]
+
+
+diffclusters <- droplevels(as.factor(SCN3Elevel1[colnames(networkExpressionFilesub)]))
+names(diffclusters) <- colnames(networkExpressionFilesub)
+table(diffclusters)
+NetworkMASTobj <- FromMatrix(networkExpressionFilesub, as.data.frame(as.character(diffclusters)))
+thres <- thresholdSCRNACountMatrix(assay(NetworkMASTobj), nbins = 10, min_per_bin = 10,bin_by = "median",data_log = FALSE)#,adj = 1)
+assays(NetworkMASTobj) <- list(thresh=thres$counts_threshold, tpm=assay(NetworkMASTobj))
+cdr2 <-colSums(assay(NetworkMASTobj)>mean(networkExpressionFile))
+colData(NetworkMASTobj)$cngeneson <- scale(cdr2)
+options(mc.cores=1)
+zlmCond <- zlm(~diffclusters+cngeneson, NetworkMASTobj)
+show(zlmCond)
+zlm.lr <- lrTest(zlmCond, 'diffclusters')
+FDR <- p.adjust(zlm.lr[,,'Pr(>Chisq)'][,3],"fdr")
+diffgenes <- names(FDR[FDR < 0.01])
+sigtest <- diffgenes
+summaryDt <- summary(zlmCond)
+test <- print(summaryDt,n=nrow(NetworkMASTobj))
+row.names(test) <- test[,1]
+rown <- row.names(test)
+test <- test[,-c(1,2)]
+diffclusters1 <- 0
+test <- cbind(diffclusters1,test)
+test <- t(apply(test,1,function (x)gsub("*", "", x, fixed = TRUE)))
+test <- apply(test,2,as.numeric)
+row.names(test) <- rown
+DifferentialGenestest <- t(apply(test,1,function(x) x-mean(x,na.rm=TRUE)))
+#DifferentialGenestest <- DifferentialGenestest[sigtest,-2]
+#DifferentialGenestest <- DifferentialGenestest
+markersMAST <- scale(DifferentialGenestest)
+marker <- t(scale(t(markersMAST)))
+marker <- marker[sigtest,]
+markermarkov <- marker[intersect(GeneMarkov,row.names(marker)),]
+MarkerGeneList <- subset(row.names(markermarkov),! row.names(markermarkov) %in% c("Xist","Tsix","marker-GFP"))
+
+
+clusterexpression <- t(rowsum(t(networkExpressionFile[GeneMarkov,]),SCN3Elevel1[colnames(networkExpressionFile)],reorder=TRUE))
+
+clusterexpression <-  networkExpressionFile#[GeneMarkov,]
+Expression <- networkExpressionFile
+diffclusters <- SCN3Elevel1[colnames(networkExpressionFile)]
+diffclusters <- droplevels(as.factor(networkAnnotableFile$FinalClusters))
+i=1
+for(i in 1:length(levels(diffclusters)))
+  {
+  x <- Expression[,as.character(diffclusters) %in% levels(droplevels(diffclusters))[i]]
+  x <- rowMeans(x)
+  clusterexpression <- cbind(x,clusterexpression)
+}
+ clusterexpression <- clusterexpression[,ncol(clusterexpression)-ncol(Expression):ncol(clusterexpression)]
+ colnames(clusterexpression) <- levels(droplevels(diffclusters))
+ minexpr <- mean(clusterexpression)
+ clusterexpression <- clusterexpression[apply(clusterexpression,1,function(x) any(x>minexpr)),]
+ clusterexpression <- clusterexpression[apply(t(scale(t(clusterexpression))),1,function(x) any(abs(x)>1.96)),]
+clusterexpression <- log(clusterexpression+1)
+ colnames(clusterexpression) <- levels(droplevels(diffclusters))
+markerscl <- scale(t(clusterexpression))
+markerscl <- as.data.frame(t(scale(markerscl)))
+markers <- as.character(NULL)
+for(i in 1:ncol(clusterexpression))
+{
+  sorted <- markerscl[,i]
+  names(sorted) <- row.names(markerscl)
+  #sorted <- sorted[GeneMarkov]
+  sorted <- sort(sorted,decreasing = TRUE)
+  markers <- c(markers,intersect(names(head(sorted,30)),row.names(markerscl[abs(markerscl[,i])>1,])))
+ #markers <- c(markers,row.names(sorted[abs(markerscl[,i])>2,]))
+}
+markers <- unique(markers[!is.na(markers)])
+#markers <- markers[!is.na(markers)]
+geneselect <- markers
+
+
+pcacluster <- prcomp(t(markerscl[geneselect,]),scale. = FALSE)
+pcaclusterexpression <- pcacluster$x#[,c(1:which(cumsum(pcacluster$sdev[1:ncol(pcacluster$x)])/sum(pcacluster$sdev[1:ncol(pcacluster$x)]) > 0.8)[1])]
+SCN3E_hc_cluster <- hclust(dist(pcaclusterexpression,method="manhattan"), method = "ward.D2")
+pcagene <- prcomp(markerscl[geneselect,],scale. = FALSE)
+pcageneexpression <- pcagene$x[,c(1:which(cumsum(pcagene$sdev[1:ncol(pcagene$x)])/sum(pcagene$sdev[1:ncol(pcagene$x)]) > 0.8)[1])]
+SCN3E_hc_gene <- hclust(dist(pcageneexpression,method="manhattan"), method = "ward.D2")
+
+library(cba)
+SCN3E_hc_cluster$merge <- order.optimal(dist(pcaclusterexpression,method="manhattan"), SCN3E_hc_cluster$merge)$merge
+#SCN3E_hc_gene$merge <- order.optimal(dist(pcageneexpression,method="manhattan"), SCN3E_hc_gene$merge)$merge
+
+# markers <- as.character(NULL)
+# for(i in 1:ncol(clusterexpression[,]))
+# {
+#   sorted <- markerscl[,SCN3E_hc_cluster$order[i]]
+#   names(sorted) <- row.names(markerscl)
+#   #sorted <- sorted[GeneMarkov]
+#   sorted <- sort(sorted,decreasing = TRUE)
+#   markers <- c(markers,intersect(names(head(sorted,50)),row.names(markerscl[abs(markerscl[,SCN3E_hc_cluster$order[i]])>2,])))
+#  #markers <- c(markers,row.names(sorted[abs(markerscl[,i])>2,]))
+# }
+# markers <- unique(markers[!is.na(markers)])
+# #markers <- markers[!is.na(markers)]
+# geneselect <- markers
+
+library(heatmap3)
+library(viridis)
+heatmap3(clusterexpression[geneselect,], Rowv = NA , Colv = NA ,scale = "row",symm = F, method = "ward.D2",col=viridis(1024),balanceColor =F,cexRow = 3,cexCol = 4)
+
+testwilcox <-pairwise.wilcox.test(t(clusterexpression), as.factor(colnames(clusterexpression)), p.adj = "bonf")
+View(testwilcox$p.value)
+
+
+L1names <- levels(SCN3Elevel1)
+####Optional 
+#Name the clusters
+#L1names <-paste(c("OL","NPROG","EVLMC","VLMC","NBLAST"),L1names,sep=".cluster")
+#####
+L1Markerslist <- MarkerGeneList
+
+save(networkExpressionFile,networkAnnotableFile,GeneMarkov, SCN3Elevel1, tsne_out, markermarkov, DifferentialGenestest,  file = "~/Documents/SingleCellData/ELISA10xanalysis/DifferentialExpression/Week1/3VS4.Rdata")
+```
+Save the files
+```{r}
+write.table(DifferentialGenestest,file = paste("~/Documents/SingleCellData/IdoDAM/ClustersZ_Lvl1Elisa.txt",sep=""), sep="\t",row.names = TRUE, col.names = TRUE, quote = FALSE)
+write.table(test,file = paste("~/Documents/SingleCellData/IdoDAM/ClustersLvl1Elisa.txt",sep=""), sep="\t",row.names = TRUE, col.names = TRUE, quote = FALSE)
+```
+L2 clustering, Now we split the data and repeat the clustering 
+
+Only do this once because it wipes the previous clusterinformation
+```{r, fig.height=5}
+#Reset genelist
+expr_limit <- 0
+NetworkClusters <- as.character(NULL)
+L2markerlist <- as.character(NULL)
+L2markovlist <- as.character(NULL)
+namesNetworkClusters <- as.character(NULL)
+##########Indicate the clusternumber by setting i
+```
+Set i to the sub-cluster
+```{r}
+#i=c("1","2","4","5","6","7","8","9","10","11","12","13","15")
+i=c("1")
+```
+```{r}
+threshold <- 3 #use mean spatial correlation of geneset of the featureselection (1) or after the first round of filtering (2) (more strict, which is default) 
+usemagic <- "FALSE"
+boolean <- "FALSE"
+networksubset <- networkExpressionFile#[,names(subset(SCN3Elevel1, SCN3Elevel1 %in% i))]
+dim(networksubset)
+emat_expressed <- apply(networksubset,1,function(x) any ((x) > expr_limit))
+clusternumber <- as.numeric(i)
+print(paste("Working on cluster",clusternumber, nrow(networksubset),"Genes",ncol(networksubset),"Cells"))
+CVsq <- function(x) {(sd(x)/mean(x))^2}
+expr_limit <- mean(networkExpressionFile)
+emat_expressed <- apply(networksubset,1,function(x) any ((x) > expr_limit))
+emat_expressed <- networksubset[emat_expressed,]
+CV2 <- apply(emat_expressed,1,CVsq)
+meancounts <- apply(emat_expressed,1,mean)
+CV2_matrix <- matrix(c(log(meancounts),log(CV2)),nrow = length(CV2),ncol = 2)
+row.names(CV2_matrix) <- names(CV2)
+colnames(CV2_matrix) <- c("LogExpr","CV2")
+CV2_matrix <- as.data.frame(CV2_matrix)
+library(e1071)
+model <- svm(CV2 ~ LogExpr ,CV2_matrix)#, gamma = 0.06)
+predictedY <- predict(model, CV2_matrix)
+CV2_matrix <- cbind(CV2_matrix,predictedY)
+CV2_matrix$RelativeVariance <-CV2_matrix$CV2 - CV2_matrix$predictedY
+NormGenes <- row.names(subset(CV2_matrix, RelativeVariance >= 0))
+NormGenesFactor <- as.factor(1*(CV2_matrix$RelativeVariance >= 0))
+palette("default")
+plot(CV2_matrix$LogExpr,CV2_matrix$CV2,xlab ="Mean Count Magnitude (log)",ylab="Squared Coefficient of Variation", pch=20, cex=0.3, col=NormGenesFactor)
+points(CV2_matrix$LogExpr,predictedY, col="green",pch=20, cex=0.1)
+length(NormGenes)
+NormGenes <- subset(NormGenes,! NormGenes %in% c("Xist","Tsix","eGFP"))
+featureselection <- NormGenes
+featureselection <- NormGenes
+#featureselection <- row.names(networkExpressionFile)
+#featureselection <- subset(featureselection,! featureselection %in% c("Xist","Tsix"))
+SCN3Egeneset <- featureselection
+SCN3Egeneset2 <- featureselection
+
+if(boolean=="TRUE"){networksubset <- 1*as.matrix(networksubset > expr_limit)}
+
+
+iter=0
+meanMoran<-0
+OldGeneset <- as.character(seq_len(100000))
+while(length(OldGeneset) != length(SCN3Egeneset) ){
+  iter=iter+1
+library(dpt)
+  if(length(SCN3Egeneset) > 4000){
+pca <- prcomp(t(log(networksubset[SCN3Egeneset,]+1)),scale. = FALSE)
+ncompGF <- 50
+if(length(SCN3Egeneset) < 50) {ncompGF <- length(SCN3Egeneset)}
+cd_diffusionplot <-pca$x[,c(1:which(cumsum(pca$sdev[1:ncompGF])/sum(pca$sdev[1:ncompGF]) > 0.6)[1])]
+  }
+   if(length(SCN3Egeneset) <= 4000){
+cd_diffusionplot <-t(log(networksubset[SCN3Egeneset,]+1))
+}
+cd_diffusionplot <- cd_diffusionplot[!duplicated(cd_diffusionplot),]
+#cd_diffusionplot <- t(log(networksubset[SCN3Egeneset,]+1))
+cd_diffusionplot <- cd_diffusionplot[!duplicated(cd_diffusionplot),]
+ts <- Transitions(cd_diffusionplot,k=10)
+#Gene filtering
+print(paste("Filtering", length(SCN3Egeneset), "genes."))
+OldGeneset <- SCN3Egeneset
+NetworkDist <- as.matrix(ts@transitions)
+colnames(NetworkDist) <- row.names(cd_diffusionplot)
+row.names(NetworkDist) <- row.names(cd_diffusionplot)
+emat_expressed <- apply(networksubset,1,function(x) any ((x) >expr_limit))
+emat_expressed <- networksubset[emat_expressed,row.names(NetworkDist)]
+emat_expressed <- as.matrix(emat_expressed[intersect(row.names(emat_expressed),OldGeneset),])
+if(usemagic=="TRUE"){
+emat_expressed <- magic(ts,emat_expressed[,row.names(cd_diffusionplot)], power = 1, k = 3, n_eigs = 20, n_local = 10)
+}
+library(doParallel)
+library(foreach)
+
+library(spdep)
+cores <- detectCores()
+cl <- makeCluster(cores)  
+registerDoParallel(cl)  
+i<-1
+SCN3Egenefilter <- matrix(nrow=nrow(emat_expressed),ncol = 3) 
+cellnames <- colnames(emat_expressed)
+spatial.weights <- mat2listw(NetworkDist)
+numbsim <- 1
+networkdist <- 1-NetworkDist
+library(ape)
+library(spdep)
+test <- foreach(i=1:nrow(emat_expressed),.packages="spdep",.combine=cbind) %dopar% 
+{
+ x <- emat_expressed[i,]
+ r <- row.names(emat_expressed)[i]
+ m <- c(unlist(moran.mc(x,spatial.weights,nsim=numbsim,zero.policy = TRUE))[1:3],r)
+ 
+}
+
+stopCluster(cl)
+SCN3Egenefilter <- t(test)
+SCN3Egenefilter <- SCN3Egenefilter[! apply(SCN3Egenefilter,1,function(x) any(x=="NaN")),]
+row.names(SCN3Egenefilter) <- SCN3Egenefilter[,4]
+SCN3Egenefilter_clean <- as.data.frame(SCN3Egenefilter[complete.cases(SCN3Egenefilter),c(1:3)])
+r <- row.names(SCN3Egenefilter_clean)
+SCN3Egenefilter_clean <- apply(SCN3Egenefilter_clean,2,function(x) as.numeric(x))
+row.names(SCN3Egenefilter_clean) <- r
+
+
+#if(meanMoran==0){meanMoran<-mean(SCN3Egenefilter_clean[,1])}
+if(iter<=threshold){meanMoran<-mean(SCN3Egenefilter_clean[,1],na.rm=TRUE)}
+SCN3Egeneset2 <- row.names(SCN3Egenefilter_clean[SCN3Egenefilter_clean[,1] >= meanMoran,])
+
+SCN3Egeneset <- SCN3Egeneset2
+}
+
+expr_limit <- mean(networksubset)
+expressed_genes <- 1*apply(networksubset[SCN3Egeneset,],1,function(x) (x) > expr_limit)
+expressed_genes <- apply(expressed_genes,2,function(x) sum(x) < ncol(networksubset))
+SCN3Egeneset <- intersect(row.names(networkExpressionFile[expressed_genes,]),SCN3Egeneset)
+rm(expressed_genes)
+
+GeneMarkov1 <- SCN3Egeneset
+rm(cd_diffusionplot,emat_expressed,NetworkDist,SCN3Egenefilter,test,cellnames,cl,cores,i,iter,meanMoran,numbsim,OldGeneset,r,SCN3Egeneset,spatial.weights)
+
+i<- clusternumber
+threshold <- 4 #use mean spatial correlation of geneset of the featureselection (1) or after the first round of filtering (2) (more strict, which is default) 
+networksubset <- networkExpressionFile#[,names(subset(SCN3Elevel1, SCN3Elevel1 %in% i))]
+dim(networksubset)
+clusternumber <- as.numeric(i)
+print(paste("Working on cluster",clusternumber, nrow(networksubset),"Genes",ncol(networksubset),"Cells"))
+CVsq <- function(x) {(sd(x)/mean(x))^2}
+expr_limit <- mean(networkExpressionFile)
+emat_expressed <- apply(networksubset,1,function(x) any ((x) > expr_limit))
+emat_expressed <- networksubset[emat_expressed,]
+CV2 <- apply(emat_expressed,1,CVsq)
+meancounts <- apply(emat_expressed,1,mean)
+CV2_matrix <- matrix(c(log(meancounts),log(CV2)),nrow = length(CV2),ncol = 2)
+row.names(CV2_matrix) <- names(CV2)
+colnames(CV2_matrix) <- c("LogExpr","CV2")
+CV2_matrix <- as.data.frame(CV2_matrix)
+library(e1071)
+model <- svm(CV2 ~ LogExpr ,CV2_matrix)#, gamma = 0.06)
+predictedY <- predict(model, CV2_matrix)
+CV2_matrix <- cbind(CV2_matrix,predictedY)
+CV2_matrix$RelativeVariance <-CV2_matrix$CV2 - CV2_matrix$predictedY
+NormGenes <- row.names(subset(CV2_matrix, RelativeVariance >= 0))
+NormGenesFactor <- as.factor(1*(CV2_matrix$RelativeVariance >= 0))
+palette("default")
+plot(CV2_matrix$LogExpr,CV2_matrix$CV2,xlab ="Mean Count Magnitude (log)",ylab="Squared Coefficient of Variation", pch=20, cex=0.3, col=NormGenesFactor)
+points(CV2_matrix$LogExpr,predictedY, col="green",pch=20, cex=0.1)
+length(NormGenes)
+NormGenes <- subset(NormGenes,! NormGenes %in% c("Xist","Tsix","eGFP"))
+featureselection <- NormGenes
+featureselection <- NormGenes
+#featureselection <- row.names(networkExpressionFile)
+#featureselection <- subset(featureselection,! featureselection %in% c("Xist","Tsix"))
+SCN3Egeneset <- featureselection
+SCN3Egeneset2 <- featureselection
+
+if(boolean == "TRUE"){networksubset <- 1*as.matrix(networksubset > expr_limit)}
+
+
+iter=0
+meanMoran<-0
+OldGeneset <- as.character(seq_len(100000))
+while(0.5*length(GeneMarkov1) < (length(SCN3Egeneset)) ){
+  iter=iter+1
+library(dpt)
+pca <- prcomp(t(log(networksubset[SCN3Egeneset,]+1)),scale. = FALSE)
+ncompGF <- 50
+  if(length(SCN3Egeneset) > 4000){
+pca <- prcomp(t(log(networksubset[SCN3Egeneset,]+1)),scale. = FALSE)
+ncompGF <- 50
+if(length(SCN3Egeneset) < 50) {ncompGF <- length(SCN3Egeneset)}
+cd_diffusionplot <-pca$x[,c(1:which(cumsum(pca$sdev[1:ncompGF])/sum(pca$sdev[1:ncompGF]) > 0.6)[1])]
+  }
+   if(length(SCN3Egeneset) <= 4000){
+cd_diffusionplot <-t(log(networksubset[SCN3Egeneset,]+1))
+}
+cd_diffusionplot <- cd_diffusionplot[!duplicated(cd_diffusionplot),]
+ts <- Transitions(cd_diffusionplot,k=10)
+#Gene filtering
+print(paste("Filtering", length(SCN3Egeneset), "genes."))
+OldGeneset <- SCN3Egeneset
+NetworkDist <- as.matrix(ts@transitions)
+colnames(NetworkDist) <- row.names(cd_diffusionplot)
+row.names(NetworkDist) <- row.names(cd_diffusionplot)
+emat_expressed <- apply(networksubset,1,function(x) any ((x) >expr_limit))
+emat_expressed <- networksubset[emat_expressed,row.names(NetworkDist)]
+emat_expressed <- as.matrix(emat_expressed[intersect(row.names(emat_expressed),OldGeneset),])
+if(usemagic=="TRUE"){
+emat_expressed <- magic(ts,emat_expressed[,row.names(cd_diffusionplot)], power = 1, k = 20, n_eigs = 20, n_local = 10)
+}
+library(doParallel)
+library(foreach)
+
+library(spdep)
+cores <- detectCores()
+cl <- makeCluster(cores)  
+registerDoParallel(cl)  
+i<-1
+SCN3Egenefilter <- matrix(nrow=nrow(emat_expressed),ncol = 3) 
+cellnames <- colnames(emat_expressed)
+spatial.weights <- mat2listw(NetworkDist)
+numbsim <- 1
+networkdist <- 1-NetworkDist
+library(ape)
+library(spdep)
+test <- foreach(i=1:nrow(emat_expressed),.packages="spdep",.combine=cbind) %dopar% 
+{
+ x <- emat_expressed[i,]
+ x <- x[x>expr_limit]
+ if(length(x)<2){}
+ else{
+ r <- row.names(emat_expressed)[i]
+ y <- networkdist[names(x),names(x)]
+ a <- mean(y)
+ y <- nrow(y)
+ m <- c(a,y,r)
+ }
+}
+
+stopCluster(cl)
+SCN3Egenefilter <- t(test)
+SCN3Egenefilter <- SCN3Egenefilter[! apply(SCN3Egenefilter,1,function(x) any(x=="NaN")),]
+row.names(SCN3Egenefilter) <- SCN3Egenefilter[,3]
+SCN3Egenefilter_clean <- as.data.frame(SCN3Egenefilter[complete.cases(SCN3Egenefilter),c(1:2)])
+r <- row.names(SCN3Egenefilter_clean)
+SCN3Egenefilter_clean <- apply(SCN3Egenefilter_clean,2,function(x) as.numeric(x))
+row.names(SCN3Egenefilter_clean) <- r
+
+SCN3Egenefilter_clean2 <- SCN3Egenefilter_clean
+SCN3Egenefilter_clean2[,1] <- log(SCN3Egenefilter_clean2[,1]+1)
+library(e1071)
+model <- svm(V1 ~ V2 ,SCN3Egenefilter_clean2,gamma = 10)
+predictedY <- predict(model, SCN3Egenefilter_clean2)
+SCN3Egenefilter_clean2 <- SCN3Egenefilter_clean2[names(predictedY),]
+CV2_matrix <- as.data.frame(cbind(SCN3Egenefilter_clean2,predictedY))
+CV2_matrix$RelativeVariance <-CV2_matrix[,1] - CV2_matrix[,3]
+SCN3E_genes2 <- row.names(subset(CV2_matrix, RelativeVariance < 0))
+#NormGenesFactor <- as.factor(1*(CV2_matrix$RelativeVariance < 0))
+#palette("default")
+#plot(CV2_matrix$V5,CV2_matrix$V4,xlab ="Mean Cell Count Magnitude (log)",ylab="Mean Distance in Network (log)", pch=20, cex=0.1, col=NormGenesFactor)
+#points(CV2_matrix$V5,CV2_matrix$predictedY, col="green",pch=20, cex=0.3)
+#length(SCN3E_genes2)
+
+SCN3Egeneset <- SCN3E_genes2
+#SCN3Egeneset <- SCN3Egeneset2
+}
+
+expr_limit <- mean(networksubset)
+expressed_genes <- 1*apply(networksubset[SCN3Egeneset,],1,function(x) (x) > expr_limit)
+expressed_genes <- apply(expressed_genes,2,function(x) sum(x) < ncol(networksubset))
+SCN3Egeneset <- intersect(row.names(networkExpressionFile[expressed_genes,]),SCN3Egeneset)
+rm(expressed_genes)
+
+GeneMarkov <- unique(c(GeneMarkov1,SCN3Egeneset))
+rm(cd_diffusionplot,emat_expressed,NetworkDist,SCN3Egenefilter,test,cellnames,cl,cores,i,iter,meanMoran,numbsim,OldGeneset,r,SCN3Egeneset,spatial.weights)
+```
+Estimate the number of subclusters, try 5, 10, or 20 pca components = nCOMP
+```{r, fig.width=15}
+gc()
+library(factoextra)
+pca <- prcomp(t(log(networksubset[GeneMarkov,]+1)),scale. = FALSE)
+plot(pca$sdev[1:50],pch = 20,
+xlab = 'Diffusion component (DC)', ylab = 'sdev')
+genemodulePCA <-  cor(t(log(networkExpressionFile+1)),pca$x[,1:20],method="pearson")
+#which(cumsum(pca$sdev[1:50])/sum(pca$sdev[1:50]) > 0.4)[1]
+
+cd_diffusionplot <-pca$x[,c(1:which(cumsum(pca$sdev[1:20])/sum(pca$sdev[1:20]) > 0.6)[1])]
+#cd_diffusionplot <- cd_diffusionplot[!duplicated(cd_diffusionplot),]
+#cd_diffusionplot <-t(log(networksubset[GeneMarkov,]+1))
+cd_diffusionplot <- cd_diffusionplot[!duplicated(cd_diffusionplot),]
+ts <- Transitions(cd_diffusionplot)#k=20)
+if(usemagic=="TRUE"){
+networksubset <- magic(ts,networksubset[,row.names(cd_diffusionplot)], power = 1, k = 20, n_eigs = 20, n_local = 10)
+}
+pca <- prcomp(as.matrix(ts@transitions),scale. = FALSE)
+plot(pca$sdev[1:50],pch = 20,
+xlab = 'Diffusion component (DC)', ylab = 'sdev')
+
+nCOMP<- which(cumsum(pca$sdev[1:20])/sum(pca$sdev[1:20]) > 0.4)[1]
+pcaexpression <-  t(pca$x[,c(1:nCOMP)])
+fviz_nbclust(t(pcaexpression),diss=dist(t(pcaexpression),method="manhattan"), hcut, method = "silhouette",
+             hc_method = "ward.D2",k.max = 20)
+
+Networkdist <- as.matrix(ts@transitions)
+#Networkdist <- 1-as.matrix(dist(pca$x[,c(1:nCOMP)],method="manhattan"))
+colnames(Networkdist) <- colnames(networksubset)
+row.names(Networkdist) <- colnames(networksubset)
+library(igraph)
+L2graph <- graph_from_adjacency_matrix(Networkdist,weighted = TRUE,mode="undirected")
+L2graphSupercells <- cluster_louvain(L2graph,weights=E(L2graph)$weight)
+table(L2graphSupercells$membership)
+SCN3Eclustersubset <- as.factor(L2graphSupercells$membership)
+names(SCN3Eclustersubset) <- L2graphSupercells$names
+
+SCN3Egeneset <- GeneMarkov 
+clusterdata <- log(networksubset[SCN3Egeneset,]+1)
+clusterdata <- clusterdata[apply(clusterdata,1,function(x) var(x) > 0),apply(clusterdata,2,function(x) var(x) > 0)]
+#library(cluster)
+SCN3E_hcsubset <- hclust(dist(pca$x[,c(1:nCOMP)],method="manhattan"), method = "ward.D2")
+#SCN3E_hcsubset <- hclust(Networkdist, method = "ward.D2")
+#SCN3Eclustersubset <- as.character(rbind(groups = cutree(SCN3E_hcsubset, k=20)))
+#names(SCN3Eclustersubset) <- colnames(clusterdata)
+#k=length(unique(SCN3Eclustersubset))
+#table(SCN3Eclustersubset)
+
+pcagene <- prcomp(log(networkExpressionFile[row.names(clusterdata),]+1),scale. = FALSE)
+pcageneexpression <- pcagene$x[,c(1:which(cumsum(pcagene$sdev[1:20])/sum(pcagene$sdev[1:20]) > 0.4)[1])]
+SCN3E_hc_gene <- hclust(dist(pcageneexpression,method="euclidean"), method = "ward.D2")
+
+
+
+clusterz <-  networksubset[featureselection,]
+Expression <- log(networksubset[featureselection,]+1)
+diffclusters <- as.factor(SCN3Eclustersubset)
+names(diffclusters) <- colnames(networksubset)
+i=1
+for(i in 1:length(levels(diffclusters)))
+  {
+  x <- Expression[,as.character(diffclusters) %in% levels(droplevels(diffclusters))[i]]
+  x <- rowMeans(x)
+  clusterz <- cbind(x,clusterz)
+}
+ clusterz <- clusterz[,ncol(clusterz)-ncol(Expression):ncol(clusterz)]
+ colnames(clusterz) <- levels(droplevels(diffclusters))
+ 
+ threshold <- mean(networksubset)
+ Expression <- networksubset[featureselection,]
+ clusterexp <-  networksubset[featureselection,]
+ for(i in 1:length(levels(diffclusters)))
+  {
+  x <- Expression[,as.character(diffclusters) %in% levels(droplevels(diffclusters))[i]]
+  x <- apply(x,1,function(x) length(x[x>=threshold])/length(x))
+  clusterexp <- cbind(x,clusterexp)
+}
+ clusterexp <- clusterexp[,ncol(clusterexp)-ncol(Expression):ncol(clusterexp)]
+ colnames(clusterexp) <- levels(droplevels(diffclusters))
+ clusterexp <- row.names(clusterexp[apply(clusterexp,1,function(x) any(x>0.2)),])
+ 
+ 
+clusterz <- scale(clusterz)
+if(ncol(clusterz)==2){clusterz <- as.data.frame(clusterz);clusterz$diff <- clusterz[,1]-clusterz[,2]}
+if(ncol(clusterz)>2){clusterz <- scale(t(clusterz));clusterz <- t(clusterz)}
+
+
+clusterz <- clusterz[clusterexp,]
+ 
+
+clusterfiltered <- clusterz[intersect(row.names(clusterz),SCN3Egeneset),]
+#clusterfiltered <- clusterfiltered[apply(clusterfiltered,1,function(x) any(x > 1.96)),]
+nrow(clusterfiltered)
+
+
+
+
+Networkdist <- as.matrix(ts@transitions)
+Networkdist <- as.dist(1-Networkdist)
+tsne <- Networkdist
+#tsne <- t(pca$x[,c(1:nCOMP)])
+#tsne <- log(networksubset[GeneMarkov,]+1)
+library(Rtsne)
+set.seed(123456789)
+tsne_out <- Rtsne(t(tsne), initial_dims=20, perplexity=7+(0.01*ncol(networksubset)),max_iter = 1000,check_duplicates = FALSE,
+                  verbose = TRUE, theta = 0.5, pca = FALSE)
+#rownames(tsne_out$Y) <- colnames(tsne)
+
+library(cba)
+SCN3E_hcsubset$merge <- order.optimal(dist(pca$x[,c(1:nCOMP)],method="manhattan"), SCN3E_hcsubset$merge)$merge
+SCN3E_hc_gene$merge <- order.optimal(dist(pcageneexpression,method="manhattan"), SCN3E_hc_gene$merge)$merge
+
+#library("dendsort")
+
+#SCN3E_hcsubset <- dendsort(SCN3E_hcsubset, type="min")
+#SCN3E_hc_gene <- dendsort(SCN3E_hc_gene, type="min")
+palette <- rainbow(length(levels(as.factor(SCN3Eclustersubset))))
+cols <- palette[as.factor(SCN3Eclustersubset)]
+palette <- rainbow(length(levels(droplevels(as.factor(networkAnnotableFile$FinalClusters)))))
+cols <- palette[droplevels(as.factor(networkAnnotableFile$FinalClusters))]
+library(heatmap3)
+library(viridis)
+#pdf("~/Documents/SingleCellData/IdoDAM/L1S1clusteringHMElisa.pdf",width = 10,height = 6,useDingbats=FALSE)
+heatmap3(log(clusterdata+1),ColSideColors=cols, Rowv = as.dendrogram(SCN3E_hc_gene) , Colv = as.dendrogram(SCN3E_hcsubset) ,scale = "none",symm = F, method = "ward.D2",col=viridis(1024),balanceColor =F,cexRow = 1)
+legend("topright", legend=levels(droplevels(as.factor(SCN3Eclustersubset))),
+   col=palette,
+   pch=19)
+#pdf("~/Documents/SingleCellData/IdoDAM/L1S1clusteringtSNEELISA.pdf",width = 10,height = 6,useDingbats=FALSE)
+plot(tsne_out$Y,col=cols,pch=20,cex=10)
+legend("topright", legend=levels(droplevels(as.factor(SCN3Eclustersubset))),
+   col=palette,
+   pch=19)
+
+palette <- rainbow(length(levels(droplevels(as.factor(networkAnnotableFile$FinalClusters)))))
+cols <- palette[droplevels(as.factor(networkAnnotableFile$FinalClusters))]
+heatmap3(log(clusterdata+1),ColSideColors=cols, Rowv = as.dendrogram(SCN3E_hc_gene) , Colv = as.dendrogram(SCN3E_hcsubset) ,scale = "none",symm = F, method = "ward.D2",col=viridis(1024),balanceColor =F,cexRow = 1)
+legend("topright", legend=levels(droplevels(as.factor(networkAnnotableFile$FinalClusters))),
+   col=palette,
+   pch=19)
+
+plot(tsne_out$Y,col=cols,pch=20,cex=10)
+legend("topright", legend=levels(droplevels(as.factor(networkAnnotableFile$FinalClusters))),
+   col=palette,
+   pch=19)
+```
+Check the expression of genes in clusterfiltered
+```{r}
+Expression2 <- as.data.frame(t(log(networksubset+1)))
+#pdf("~/Documents/SingleCellData/IdoDAM/L1S1clusteringtSNELpl.pdf",width = 10,height = 6,useDingbats=FALSE)
+ggplot(as.data.frame(tsne_out$Y), aes(x=V1, y=V2, colour=Expression2$'Ckap5')) +
+  geom_point(size=3) + geom_density2d(alpha=0.0,size=0.5, color="black", bins=10)  + scale_colour_gradient(low = "blue", high = "yellow") +
+  theme(strip.background = element_blank(), strip.text.x = element_blank(),axis.text.x = element_blank(),axis.text.y= element_blank(),axis.ticks= element_blank(),axis.line  = element_blank(),panel.border = element_blank(),legend.position  = "right") + 
+  xlab("tSNE_1") + ylab("tSNE_2")
+```
+```{r, fig.width=10}
+ggplot(as.data.frame(tsne_out$Y), aes(x=V1, y=V2, colour=networkAnnotableFile[colnames(networksubset),]$`substring(colnames(emat), 18)`)) +
+  geom_point(size=4) + geom_density2d(alpha=0.0,size=0.1, color="black", bins=10)  + 
+  theme(strip.background = element_blank(), strip.text.x = element_blank(),axis.text.x = element_blank(),axis.text.y= element_blank(),axis.ticks= element_blank(),axis.line  = element_blank(),panel.border = element_blank(),legend.position  = "right") + 
+  xlab("tSNE_1") + ylab("tSNE_2")  +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+       panel.grid.major = element_blank(),
+       panel.grid.minor = element_blank(),
+       panel.border = element_blank(),
+       panel.background = element_blank())
+
+```
+Save clusterinfo and add the markers and clusters to a string and repeat the whole thing for other subclusters by increasing i to the corresponding cluster
+```{r}
+saveRDS(clusterfiltered, file =paste("~/Documents/SingleCellData/ELISA10xanalysis/",L1names[clusternumber],"markers.rds",sep=""))
+write.table(clusterfiltered,file = paste("~/Documents/SingleCellData/ELISA10xanalysis/",L1names[clusternumber],"markers.txt",sep=""), sep="\t",row.names = TRUE, col.names = TRUE, quote = FALSE)
+
+#If no clusters use
+SCN3E_hcsubset <- hclust(Networkdist, method = "ward.D2")
+SCN3Eclustersubset <- as.character(rbind(groups = cutree(SCN3E_hcsubset, k=1 )))
+names(SCN3Eclustersubset) <- colnames(clusterdata)
+
+
+#Add in the clusterinfo 
+NetworkClusters <- c(NetworkClusters,paste(L1names[clusternumber],SCN3Eclustersubset,sep="_"))
+namesNetworkClusters <- c(namesNetworkClusters,names(SCN3Eclustersubset))
+L2markerlist <- c(L2markerlist,GeneMarkov)
+
+
+```
+Generate a tSNE using the found markers and specific genes in the clustering
+```{r, fig.height=5}
+L1L2markers <- c(L1geneset,L2markerlist)
+#L1L2markers <- c(L1Markerslist,L2markerlist)
+#L1L2markers <- L2markerlist
+L1L2markers <- unique(L1L2markers)
+names(NetworkClusters) <- namesNetworkClusters
+
+pca <- prcomp(t(log(networkExpressionFile[L1L2markers,]+1)),scale. = FALSE)
+tsne <-t(pca$x[,c(1:50)])
+
+library(Rtsne)
+set.seed(123456789)
+tsne_out <- Rtsne(t(tsne), initial_dims=20, perplexity=7+(0.01*ncol(networkExpressionFile)),max_iter = 5000,check_duplicates = FALSE,
+                  verbose = TRUE, theta = 0.5, pca = FALSE)
+rownames(tsne_out$Y) <- names(NetworkClusters)
+length(levels(as.factor(NetworkClusters)))
+
+saveRDS(NetworkClusters[colnames(networkExpressionFile)], file = "~/Documents/SingleCellData/Networkclustering/SS2/SS2/Clusters/ClustersFinal.rds")
+
+saveRDS(GeneMarkov, file = "~/Documents/SingleCellData/Networkclustering/SS2/SS2/Clusters/GeneMarkovOLstrict.rds")
+
+diff <- readRDS("~/Documents/SingleCellData/ELISA10xanalysis/DifferentialExpression/Week1/Clustering/1markers.rds")
+
+networkAnnotableFile$FinalClusters <- NetworkClusters[colnames(networkExpressionFile)]
+
+#palette <- c("#b78ddd","#5bb84d","#9d55c7","#b5b233","#606ad9","#dd9230","#6891d8","#da582e","#46aed7","#dd3f5e","#54be9d","#cb4fb1","#3c8149","#d44385","#97b15e","#625ea3","#c99f5a","#984a79","#71732b","#d987c0","#9d5f2c","#e58095","#b63b33","#e58a6e","#aa4f57")
+palette <- c("#51c999","#ba3aaa","#4db955","#9750c8","#7bb33b","#6068da","#b2bb35","#cf7ee2","#487a2d","#da429a","#71b479","#ec6dc7","#34825c","#e6417a","#41bfbf","#d24428","#52a0d6","#dd8529","#4c6db8","#c29c2c","#8357a3","#dda653","#a84494","#7e8737","#9f96e0","#aa5520","#a76495","#b6b56a","#b53b6d","#81692a","#e38cb9","#ec7556","#984960","#d89467","#cd3b4b","#de7d81","#a2523e")
+#pdf("~/Documents/SingleCellData/IdoDAM/FinalTsne.pdf ",width = 10,height = 10,useDingbats=FALSE)
+ggplot(as.data.frame(tsne_out$Y), aes(x=V1, y=V2, colour=droplevels(as.factor(NetworkClusters[colnames(networkExpressionFile)])))) +
+  geom_point(size=2) + geom_density2d(alpha=0.0,size=0.1, color="black", bins=10)  + (scale_colour_manual(as.factor(NetworkClusters[colnames(networkExpressionFile)]),values=palette))+
+  theme(strip.background = element_blank(), strip.text.x = element_blank(),axis.text.x = element_blank(),axis.text.y= element_blank(),axis.ticks= element_blank(),axis.line  = element_blank(),panel.border = element_blank(),legend.position  = "right") + 
+  xlab("tSNE_1") + ylab("tSNE_2")  +
+ theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+       panel.grid.major = element_blank(),
+       panel.grid.minor = element_blank(),
+       panel.border = element_blank(),
+       panel.background = element_blank())
+
+
+#Plot the tSNE
+ggplot(as.data.frame(tsne_out$Y), aes(x=V1, y=V2, colour=networkAnnotableFilesub$BrainVSSpnCrd)) +
+  geom_point(size=2) + geom_density2d(alpha=0.0,size=0.1, color="black", bins=10)  + 
+  theme(strip.background = element_blank(), strip.text.x = element_blank(),axis.text.x = element_blank(),axis.text.y= element_blank(),axis.ticks= element_blank(),axis.line  = element_blank(),panel.border = element_blank(),legend.position  = "right") + 
+  xlab("tSNE_1") + ylab("tSNE_2")  +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+       panel.grid.major = element_blank(),
+       panel.grid.minor = element_blank(),
+       panel.border = element_blank(),
+       panel.background = element_blank())
+
+#FinalClustersOrdered <- factor(networkAnnotableFile$FinalClusters, levels=c("OPC1a","OPC1b","OPC2","E17.5","COP","NFOL","Cycling","NP1a","NP1b","NP2","NP3","eVLMC","PLC","pnVLMC","VLMC"))
+#palette <- c("#c6dbef","#6baed6","#08519c","#d03ea8","#006d2c","#41ab5d","#000000","#cab2d6","#6a3d9a","#dadaeb","#c994c7","#fcbba1","#ef3b2c","#a63603","#f16913")
+#pdf("~/Documents/SingleCellData/Networkclustering/E13P7/L1clusteringtSNEAllgenes.pdf",width = 15,height = 10,useDingbats=FALSE)
+ggplot(as.data.frame(tsne_out$Y), aes(x=V1, y=V2, colour=FinalClustersOrdered)) +
+  geom_point(size=2) + geom_density2d(alpha=0.0,size=0.1, color="black", bins=10)  + (scale_colour_manual(as.factor(FinalClustersOrdered),values=palette))+
+  theme(strip.background = element_blank(), strip.text.x = element_blank(),axis.text.x = element_blank(),axis.text.y= element_blank(),axis.ticks= element_blank(),axis.line  = element_blank(),panel.border = element_blank(),legend.position  = "right") + 
+  xlab("tSNE_1") + ylab("tSNE_2")  +
+  theme_bw() +
+  theme(axis.line = element_line(colour = "black"),
+       panel.grid.major = element_blank(),
+       panel.grid.minor = element_blank(),
+       panel.border = element_blank(),
+       panel.background = element_blank())
+```
+
+```
+```{r}
+#View(as.matrix(ts@transitions))
+#Networkdist <- 1*(as.matrix(ts@transitions) > 0)
+#L2graphSupercells <- cluster_walktrap(L2graph,weights=E(L2graph)$weight,step=50,merges=TRUE)
+#table(L2graphSupercells$membership)
+```
+
+
+
+```{r}
+L2graphSupercells <- cluster_fast_greedy(L2graph,weights=E(L2graph)$weight)
+table(L2graphSupercells$membership)
+SCN3Eclustersubset <- as.factor(L2graphSupercells$membership)
+names(SCN3Eclustersubset) <- L2graphSupercells$names
+Networkdist <- as.dist(1-Networkdist)
+fviz_nbclust(t(pcaexpression),diss=Networkdist, hcut, method = "silhouette",
+             hc_method = "ward.D2",k.max = 8)
+```
